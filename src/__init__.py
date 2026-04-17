@@ -1,0 +1,2 @@
+"""Retail ETL portfolio project."""
+
