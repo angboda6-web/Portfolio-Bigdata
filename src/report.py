@@ -20,34 +20,57 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
             totals = conn.execute(
                 text(
                     """
-                SELECT
-                    COUNT(*) AS total_orders,
-                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
-                    ROUND(CAST(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END) AS numeric), 2) AS revenue
-                FROM fact_orders
+                    SELECT
+                        COUNT(*) AS total_orders,
+                        SUM(sales_total) AS revenue,
+                        SUM(profit_total) AS profit
+                    FROM fact_orders
                     """
                 )
             ).mappings().one()
             customer = conn.execute(
-                text("SELECT customer_name, city, lifetime_value FROM customer_summary ORDER BY lifetime_value DESC LIMIT 1")
+                text(
+                    """
+                    SELECT customer_name, city, state, lifetime_value, profit
+                    FROM customer_summary
+                    ORDER BY lifetime_value DESC
+                    LIMIT 1
+                    """
+                )
             ).mappings().first()
             top_products = conn.execute(
-                text("SELECT product_name, category, units_sold, revenue FROM top_products ORDER BY revenue DESC LIMIT 5")
+                text(
+                    """
+                    SELECT product_name, category, sub_category, units_sold, revenue, profit
+                    FROM top_products
+                    ORDER BY revenue DESC
+                    LIMIT 5
+                    """
+                )
             ).mappings().all()
             daily = conn.execute(
-                text("SELECT order_date, orders_count, revenue, avg_order_value FROM daily_sales ORDER BY order_date ASC LIMIT 5")
+                text(
+                    """
+                    SELECT order_date, orders_count, revenue, profit, avg_order_value
+                    FROM daily_sales
+                    ORDER BY order_date ASC
+                    LIMIT 5
+                    """
+                )
             ).mappings().all()
     finally:
         engine.dispose()
 
     metrics = {
         "orders": int(totals["total_orders"]),
-        "completed_orders": int(totals["completed_orders"]),
         "revenue": float(totals["revenue"] or 0.0),
+        "profit": float(totals["profit"] or 0.0),
         "best_customer": {
             "customer_name": customer["customer_name"],
             "city": customer["city"],
+            "state": customer["state"],
             "lifetime_value": float(customer["lifetime_value"]),
+            "profit": float(customer["profit"]),
         }
         if customer
         else None,
@@ -55,8 +78,10 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
             {
                 "product_name": row["product_name"],
                 "category": row["category"],
+                "sub_category": row["sub_category"],
                 "units_sold": int(row["units_sold"]),
                 "revenue": float(row["revenue"]),
+                "profit": float(row["profit"]),
             }
             for row in top_products
         ],
@@ -65,6 +90,7 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
                 "order_date": row["order_date"],
                 "orders_count": int(row["orders_count"]),
                 "revenue": float(row["revenue"]),
+                "profit": float(row["profit"]),
                 "avg_order_value": float(row["avg_order_value"]),
             }
             for row in daily
@@ -79,8 +105,8 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
         "## Resumen",
         "",
         f"- Pedidos totales: {metrics['orders']}",
-        f"- Pedidos completados: {metrics['completed_orders']}",
         f"- Ingresos totales: {metrics['revenue']:.2f}",
+        f"- Beneficio total: {metrics['profit']:.2f}",
         "",
         "## Mejor cliente",
         "",
@@ -90,8 +116,9 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
         lines.extend(
             [
                 f"- Nombre: {customer['customer_name']}",
-                f"- Ciudad: {customer['city']}",
+                f"- Ciudad: {customer['city']}, {customer['state']}",
                 f"- Lifetime value: {float(customer['lifetime_value']):.2f}",
+                f"- Profit: {float(customer['profit']):.2f}",
             ]
         )
     else:
@@ -101,7 +128,7 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
     if top_products:
         for row in top_products:
             lines.append(
-                f"- {row['product_name']} ({row['category']}): {int(row['units_sold'])} unidades, {float(row['revenue']):.2f} euros"
+                f"- {row['product_name']} ({row['category']} / {row['sub_category']}): {int(row['units_sold'])} unidades, {float(row['revenue']):.2f} euros, profit {float(row['profit']):.2f}"
             )
     else:
         lines.append("- No disponible")
@@ -110,7 +137,7 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
     if daily:
         for row in daily:
             lines.append(
-                f"- {row['order_date']}: {int(row['orders_count'])} pedidos, {float(row['revenue']):.2f} euros, ticket medio {float(row['avg_order_value']):.2f}"
+                f"- {row['order_date']}: {int(row['orders_count'])} pedidos, {float(row['revenue']):.2f} euros, profit {float(row['profit']):.2f}, ticket medio {float(row['avg_order_value']):.2f}"
             )
     else:
         lines.append("- No disponible")
@@ -120,10 +147,11 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
             "",
             "## Qué demuestra este proyecto",
             "",
-            "- Limpieza de datos y control de calidad",
+            "- Limpieza de datos reales de negocio",
             "- Modelado dimensional básico",
             "- SQL analítico",
             "- Generación de reporting reproducible",
+            "- Filtros interactivos en Streamlit",
         ]
     )
 

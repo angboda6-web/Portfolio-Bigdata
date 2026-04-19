@@ -2,183 +2,154 @@
 
 ![Project cover](assets/cover.svg)
 
-Proyecto de portfolio para Big Data centrado en un flujo batch ETL reproducible.
+Portfolio project built around a real public ecommerce dataset and an ETL pipeline that can run locally or with PostgreSQL.
 
-## Overview
+## What it includes
 
-- Synthetic e-commerce style data generation
-- Data cleaning and validation
-- Loading into a local SQLite or PostgreSQL warehouse
-- Analytical SQL metrics
-- Automatic report generation
-- Streamlit dashboard for interactive exploration
+- Public dataset download from GitHub
+- Cleaning and dimensional modeling
+- SQLite or PostgreSQL warehouse
+- SQL metrics and automated reporting
+- Streamlit dashboard with business filters
+- Docker for reproducibility
 
 ## Preview
 
 ![Pipeline snapshot](assets/project-snapshot.svg)
 
+## Dataset
+
+This project uses the public **Sample Superstore** dataset hosted in a GitHub gist.
+
+- Source URL: `https://gist.githubusercontent.com/JPJeanlis/98192ecb788a3e5d023618e1ba3ce801/raw/superstore.csv`
+- Content: orders, customers, products, sales, discounts, and profit
+- Size: about 10k rows
+
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A["Raw CSV files"] --> B["Cleaning and validation"]
-    B --> C["SQLite or PostgreSQL warehouse"]
-    C --> D["Analytical tables"]
-    D --> E["Markdown report + metrics"]
-    D --> F["Streamlit dashboard"]
+    A["Public dataset"] --> B["Local download"]
+    B --> C["Cleaning and validation"]
+    C --> D["SQLite or PostgreSQL warehouse"]
+    D --> E["Analytical tables"]
+    E --> F["Markdown report + JSON metrics"]
+    E --> G["Streamlit command center"]
 ```
 
-## Project structure
+## Structure
 
-- `main.py`: command-line entry point
-- `src/data_generator.py`: creates raw datasets
-- `src/warehouse.py`: cleaning, loading and SQL modeling
-- `src/report.py`: builds the final report
-- `streamlit_app.py`: interactive dashboard
-- `tests/test_pipeline.py`: end-to-end and unit tests
-- `assets/`: visual cover and snapshot for the README
+- `main.py`: entry point
+- `src/public_dataset.py`: public dataset download
+- `src/warehouse.py`: cleaning, modeling, loading, checks
+- `src/report.py`: final report generation
+- `streamlit_app.py`: executive dashboard
+- `tests/test_pipeline.py`: unit and end-to-end tests
+- `assets/`: cover and preview images
 
-## Requirements
+## Reproducibility
 
-- Python 3.10 or newer
-- Packages from `requirements.txt`
+- Python 3.10+
+- Dependencies from `requirements.txt`
+- Optional Docker Desktop
+- Optional PostgreSQL
 
 ## How to run
+
+Download the public dataset only:
+
+```powershell
+python main.py download
+```
 
 Run the full pipeline:
 
 ```powershell
-python main.py run
+python main.py run --verbose
 ```
 
-Run with logs and custom generation settings:
-
-```powershell
-python main.py run --verbose --seed 42 --customers 80 --products 18 --days 90 --orders-per-day 8
-```
-
-Generate only raw data:
-
-```powershell
-python main.py generate
-```
-
-Build only the report from an existing warehouse:
+Generate only the report from an existing warehouse:
 
 ```powershell
 python main.py report
 ```
 
-Use a PostgreSQL warehouse instead of SQLite:
-
-```powershell
-$env:DATABASE_URL="postgresql+psycopg://postgres:change_me@localhost:5432/portfolio_db"
-python main.py run
-```
-
-Use the local PostgreSQL instance already installed on this machine:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Then edit `.env` so `DATABASE_URL` points to:
-
-```powershell
-postgresql+psycopg://portfolio_user:Portfolio2026!@localhost:5432/portfolio_db
-```
-
-After that, `python main.py run` and `streamlit run streamlit_app.py` will use PostgreSQL automatically.
-
-## Run with Docker
-
-Build the image:
-
-```powershell
-docker build -t retail-etl-portfolio .
-```
-
-Run it in a disposable container:
-
-```powershell
-docker run --rm -v "${PWD}:/app" retail-etl-portfolio
-```
-
-Or use Docker Compose:
-
-```powershell
-docker compose --profile pipeline up --build pipeline
-```
-
-Run only the dashboard after the pipeline has populated the warehouse volume:
-
-```powershell
-docker compose --profile dashboard up --build dashboard
-```
-
-Stop the stack and remove the PostgreSQL volume if you want a clean reset:
-
-```powershell
-docker compose down -v
-```
-
-If Docker Desktop is not installed yet, install it first and rerun the commands above.
-
-## Run the dashboard
-
-Start Streamlit:
+Open the dashboard:
 
 ```powershell
 streamlit run streamlit_app.py
 ```
 
-The dashboard reads the same warehouse used by the pipeline inside Docker. If you want PostgreSQL outside Docker, set `DATABASE_URL` before launching Streamlit.
+## Optional PostgreSQL
 
-The dashboard includes filters for:
+Set `DATABASE_URL` if you want PostgreSQL instead of SQLite:
 
-- date range
-- city
-- category
+```powershell
+$env:DATABASE_URL="postgresql+psycopg://portfolio_user:change_me@localhost:5432/portfolio_db"
+python main.py run
+streamlit run streamlit_app.py
+```
 
-## Outputs
-
-After running the pipeline you will see:
-
-- `data/raw/`: raw CSV files
-- `data/processed/`: cleaned CSV files
-- `warehouse/sales.db`: SQLite warehouse when using the default database
-- `artifacts/report.md`: final report
-- `artifacts/metrics.json`: summary metrics
-
-## Current results
-
-- Completed orders: 576
-- Revenue: 250075.86
-- Top category: Fitness
-- Best day: 2024-02-11
-
-## Future configuration
-
-`.env.example` is included to make a future move to PostgreSQL or another database straightforward.
-
-Copy it to `.env` when you need it:
+Copy the example if needed:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-## Why this project is useful for a portfolio
+## Docker
 
-- Shows batch data engineering fundamentals
-- Demonstrates SQL and data modeling
-- Includes testing and reproducibility
-- Generates business-oriented outputs, not just raw code
-- Compatible with both SQLite and PostgreSQL
+```powershell
+docker compose --profile pipeline up --build pipeline
+docker compose --profile dashboard up --build dashboard
+docker compose down -v
+```
+
+## Outputs
+
+After the pipeline runs you get:
+
+- `data/raw/`: downloaded dataset
+- `data/processed/`: cleaned CSV files
+- `warehouse/sales.db`: local SQLite warehouse
+- `artifacts/report.md`: final report
+- `artifacts/metrics.json`: summary metrics
+
+## Dashboard filters
+
+The dashboard is configurable with:
+
+- date range
+- city
+- category
+- segment
+- region
+- ship mode
+- top N products
+- view mode
+
+## What the project demonstrates
+
+- Public data ingestion
+- Data cleaning and modeling
+- Exact monetary metrics
+- SQL analytics
+- Reproducible testing
+- Business-oriented dashboarding
+- Dockerized execution
+
+## Current validated metrics
+
+- Orders: 5,009
+- Revenue: 2,297,200.8603
+- Profit: 286,397.0217
+- Customers: 793
+- Top category: Technology
+- Top state: California
+- Best day: 2014-03-18
 
 ## Next improvements
 
-1. Replace synthetic data with a real API source.
+1. Add a real API source for incremental updates.
 2. Add orchestration with Airflow or Prefect.
-3. Add more dashboard filters and KPIs.
-4. Add incremental loading.
-5. Move fully to PostgreSQL in production mode.
+3. Add scheduled refreshes and alerts.
+4. Add more enterprise KPIs and a download/export action.

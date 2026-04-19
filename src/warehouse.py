@@ -1,246 +1,237 @@
 from __future__ import annotations
 
-import csv
 import json
-from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 from .config import PipelineConfig
 from .db import create_database_engine
+from .public_dataset import DEFAULT_SUPERSTORE_URL, download_public_dataset
 
 
 @dataclass(frozen=True)
 class CleanedData:
-    customers: list[dict[str, object]]
-    products: list[dict[str, object]]
-    orders: list[dict[str, object]]
-    order_items: list[dict[str, object]]
-    payments: list[dict[str, object]]
+    customers: pd.DataFrame
+    products: pd.DataFrame
+    orders: pd.DataFrame
+    order_items: pd.DataFrame
 
 
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = df.copy()
+    normalized.columns = [
+        column.strip().lower().replace(" ", "_").replace("-", "_").replace("/", "_")
+        for column in normalized.columns
+    ]
+    rename_map = {
+        "rowid": "row_id",
+        "orderid": "order_id",
+        "orderdate": "order_date",
+        "shipdate": "ship_date",
+        "shipmode": "ship_mode",
+        "customerid": "customer_id",
+        "customername": "customer_name",
+        "postalcode": "postal_code",
+        "productid": "product_id",
+        "subcategory": "sub_category",
+        "productname": "product_name",
+    }
+    normalized = normalized.rename(columns={column: rename_map.get(column, column) for column in normalized.columns})
+    return normalized
 
 
-def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+def _clean_superstore(raw_path: Path) -> CleanedData:
+    df = pd.read_csv(raw_path, sep="\t")
+    df = _normalize_columns(df)
+
+    required_columns = [
+        "row_id",
+        "order_id",
+        "order_date",
+        "ship_date",
+        "ship_mode",
+        "customer_id",
+        "customer_name",
+        "segment",
+        "country",
+        "city",
+        "state",
+        "postal_code",
+        "region",
+        "product_id",
+        "category",
+        "sub_category",
+        "product_name",
+        "sales",
+        "quantity",
+        "discount",
+        "profit",
+    ]
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise KeyError(missing_columns)
+
+    df = df.dropna(subset=required_columns).copy()
+    df["row_id"] = df["row_id"].astype(int)
+    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+    df["ship_date"] = pd.to_datetime(df["ship_date"], errors="coerce")
+    df = df.dropna(subset=["order_date", "ship_date"])
+
+    for column in ["customer_id", "customer_name", "segment", "country", "city", "state", "region", "product_id", "category", "sub_category", "product_name", "ship_mode"]:
+        df[column] = df[column].astype("string").str.strip()
+
+    df["postal_code"] = df["postal_code"].astype("string").str.strip()
+    df["sales"] = pd.to_numeric(df["sales"], errors="coerce").round(4)
+    df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
+    df["discount"] = pd.to_numeric(df["discount"], errors="coerce").fillna(0.0).round(4)
+    df["profit"] = pd.to_numeric(df["profit"], errors="coerce").round(4)
+
+    df = df.dropna(subset=["sales", "quantity", "profit"])
+    df = df[df["sales"] > 0].copy()
+    df["quantity"] = df["quantity"].astype(int)
+    df["order_date"] = df["order_date"].dt.date.astype("string")
+    df["ship_date"] = df["ship_date"].dt.date.astype("string")
+
+    customers = (
+        df[
+            [
+                "customer_id",
+                "customer_name",
+                "segment",
+                "country",
+                "city",
+                "state",
+                "postal_code",
+                "region",
+            ]
+        ]
+        .drop_duplicates(subset=["customer_id"])
+        .sort_values(["customer_name", "customer_id"])
+        .reset_index(drop=True)
+    )
+
+    products = (
+        df[["product_id", "product_name", "category", "sub_category"]]
+        .drop_duplicates(subset=["product_id"])
+        .sort_values(["category", "product_name"])
+        .reset_index(drop=True)
+    )
+
+    orders = (
+        df[
+            [
+                "order_id",
+                "order_date",
+                "ship_date",
+                "ship_mode",
+                "customer_id",
+                "segment",
+                "country",
+                "city",
+                "state",
+                "region",
+            ]
+        ]
+        .groupby(
+            [
+                "order_id",
+                "order_date",
+                "ship_date",
+                "ship_mode",
+                "customer_id",
+                "segment",
+                "country",
+                "city",
+                "state",
+                "region",
+            ],
+            as_index=False,
+        )
+        .size()
+        .rename(columns={"size": "item_count"})
+    )
+
+    orders_totals = (
+        df.groupby("order_id", as_index=False)
+        .agg(
+            sales_total=("sales", "sum"),
+            profit_total=("profit", "sum"),
+        )
+        .reset_index(drop=True)
+    )
+    orders_totals["sales_total"] = orders_totals["sales_total"].round(4)
+    orders_totals["profit_total"] = orders_totals["profit_total"].round(4)
+    orders = orders.merge(orders_totals, on="order_id", how="left")
+
+    order_items = df[
+        [
+            "row_id",
+            "order_id",
+            "product_id",
+            "sales",
+            "quantity",
+            "discount",
+            "profit",
+        ]
+    ].copy()
+    order_items = order_items.rename(
+        columns={
+            "row_id": "item_id",
+            "sales": "sales_amount",
+        }
+    )
+    order_items["sales_amount"] = order_items["sales_amount"].round(4)
+    order_items["discount"] = order_items["discount"].round(4)
+    order_items["profit"] = order_items["profit"].round(4)
+
+    return CleanedData(customers=customers, products=products, orders=orders, order_items=order_items)
+
+
+def _write_csv(path: Path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    df.to_csv(path, index=False)
 
 
-def _parse_date(value: str) -> str | None:
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
-    except ValueError:
-        return None
+def load_and_clean(raw_dir: Path, processed_dir: Path, source_url: str | None = None) -> CleanedData:
+    raw_path = download_public_dataset(raw_dir, source_url or DEFAULT_SUPERSTORE_URL)
+    cleaned = _clean_superstore(raw_path)
 
+    _write_csv(processed_dir / "customers_clean.csv", cleaned.customers)
+    _write_csv(processed_dir / "products_clean.csv", cleaned.products)
+    _write_csv(processed_dir / "orders_clean.csv", cleaned.orders)
+    _write_csv(processed_dir / "order_items_clean.csv", cleaned.order_items)
 
-def clean_customers(raw_rows: list[dict[str, str]]) -> list[dict[str, object]]:
-    cleaned: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for row in raw_rows:
-        customer_id = row.get("customer_id", "").strip()
-        name = row.get("customer_name", "").strip().title()
-        email = row.get("email", "").strip().lower()
-        city = row.get("city", "").strip().title()
-        signup_date = _parse_date(row.get("signup_date", "").strip())
-        if not customer_id or customer_id in seen:
-            continue
-        if "@" not in email or not signup_date:
-            continue
-        seen.add(customer_id)
-        cleaned.append(
-            {
-                "customer_id": customer_id,
-                "customer_name": name,
-                "email": email,
-                "city": city,
-                "signup_date": signup_date,
-            }
-        )
     return cleaned
-
-
-def clean_products(raw_rows: list[dict[str, str]]) -> list[dict[str, object]]:
-    cleaned: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for row in raw_rows:
-        product_id = row.get("product_id", "").strip()
-        if not product_id or product_id in seen:
-            continue
-        try:
-            unit_price = round(float(row.get("unit_price", "0")), 2)
-        except ValueError:
-            continue
-        if unit_price <= 0:
-            continue
-        seen.add(product_id)
-        cleaned.append(
-            {
-                "product_id": product_id,
-                "product_name": row.get("product_name", "").strip().title(),
-                "category": row.get("category", "").strip().title(),
-                "unit_price": unit_price,
-            }
-        )
-    return cleaned
-
-
-def clean_orders(raw_rows: list[dict[str, str]], valid_customers: set[str]) -> list[dict[str, object]]:
-    cleaned: list[dict[str, object]] = []
-    seen: set[str] = set()
-    allowed_status = {"completed", "cancelled", "returned"}
-    for row in raw_rows:
-        order_id = row.get("order_id", "").strip()
-        customer_id = row.get("customer_id", "").strip()
-        order_date = _parse_date(row.get("order_date", "").strip())
-        status = row.get("status", "").strip().lower()
-        payment_method = row.get("payment_method", "").strip().lower()
-        if not order_id or order_id in seen:
-            continue
-        if customer_id not in valid_customers or not order_date:
-            continue
-        if status not in allowed_status:
-            continue
-        seen.add(order_id)
-        cleaned.append(
-            {
-                "order_id": order_id,
-                "customer_id": customer_id,
-                "order_date": order_date,
-                "status": status,
-                "payment_method": payment_method,
-            }
-        )
-    return cleaned
-
-
-def clean_order_items(
-    raw_rows: list[dict[str, str]],
-    valid_orders: set[str],
-    valid_products: set[str],
-) -> list[dict[str, object]]:
-    cleaned: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for row in raw_rows:
-        item_id = row.get("item_id", "").strip()
-        order_id = row.get("order_id", "").strip()
-        product_id = row.get("product_id", "").strip()
-        if not item_id or item_id in seen:
-            continue
-        if order_id not in valid_orders or product_id not in valid_products:
-            continue
-        try:
-            quantity = int(row.get("quantity", "0"))
-            unit_price = round(float(row.get("unit_price", "0")), 2)
-            line_total = round(float(row.get("line_total", "0")), 2)
-        except ValueError:
-            continue
-        if quantity <= 0 or unit_price <= 0 or line_total <= 0:
-            continue
-        seen.add(item_id)
-        cleaned.append(
-            {
-                "item_id": item_id,
-                "order_id": order_id,
-                "product_id": product_id,
-                "quantity": quantity,
-                "unit_price": unit_price,
-                "line_total": line_total,
-            }
-        )
-    return cleaned
-
-
-def clean_payments(raw_rows: list[dict[str, str]], valid_completed_orders: set[str]) -> list[dict[str, object]]:
-    cleaned: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for row in raw_rows:
-        payment_id = row.get("payment_id", "").strip()
-        order_id = row.get("order_id", "").strip()
-        payment_date = _parse_date(row.get("payment_date", "").strip())
-        payment_method = row.get("payment_method", "").strip().lower()
-        payment_status = row.get("payment_status", "").strip().lower()
-        if not payment_id or payment_id in seen:
-            continue
-        if order_id not in valid_completed_orders or not payment_date:
-            continue
-        try:
-            amount = round(float(row.get("amount", "0")), 2)
-        except ValueError:
-            continue
-        if amount <= 0 or payment_status != "paid":
-            continue
-        seen.add(payment_id)
-        cleaned.append(
-            {
-                "payment_id": payment_id,
-                "order_id": order_id,
-                "payment_date": payment_date,
-                "payment_method": payment_method,
-                "payment_status": payment_status,
-                "amount": amount,
-            }
-        )
-    return cleaned
-
-
-def load_and_clean(raw_dir: Path, processed_dir: Path) -> CleanedData:
-    raw_customers = _read_csv(raw_dir / "customers.csv")
-    raw_products = _read_csv(raw_dir / "products.csv")
-    raw_orders = _read_csv(raw_dir / "orders.csv")
-    raw_items = _read_csv(raw_dir / "order_items.csv")
-    raw_payments = _read_csv(raw_dir / "payments.csv")
-
-    customers = clean_customers(raw_customers)
-    products = clean_products(raw_products)
-    valid_customers = {row["customer_id"] for row in customers}
-    valid_products = {row["product_id"] for row in products}
-    orders = clean_orders(raw_orders, valid_customers)
-    valid_orders = {row["order_id"] for row in orders}
-    order_items = clean_order_items(raw_items, valid_orders, valid_products)
-    completed_orders = {row["order_id"] for row in orders if row["status"] == "completed"}
-    payments = clean_payments(raw_payments, completed_orders)
-
-    _write_csv(processed_dir / "customers_clean.csv", ["customer_id", "customer_name", "email", "city", "signup_date"], customers)
-    _write_csv(processed_dir / "products_clean.csv", ["product_id", "product_name", "category", "unit_price"], products)
-    _write_csv(processed_dir / "orders_clean.csv", ["order_id", "customer_id", "order_date", "status", "payment_method"], orders)
-    _write_csv(
-        processed_dir / "order_items_clean.csv",
-        ["item_id", "order_id", "product_id", "quantity", "unit_price", "line_total"],
-        order_items,
-    )
-    _write_csv(
-        processed_dir / "payments_clean.csv",
-        ["payment_id", "order_id", "payment_date", "payment_method", "payment_status", "amount"],
-        payments,
-    )
-
-    return CleanedData(
-        customers=customers,
-        products=products,
-        orders=orders,
-        order_items=order_items,
-        payments=payments,
-    )
 
 
 def _create_tables(conn) -> None:
+    for table in [
+        "customer_summary",
+        "top_products",
+        "daily_sales",
+        "fact_payments",
+        "fact_order_items",
+        "fact_orders",
+        "dim_products",
+        "dim_customers",
+    ]:
+        conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+
     statements = [
         """
         CREATE TABLE IF NOT EXISTS dim_customers (
             customer_id TEXT PRIMARY KEY,
             customer_name TEXT NOT NULL,
-            email TEXT NOT NULL,
+            segment TEXT NOT NULL,
+            country TEXT NOT NULL,
             city TEXT NOT NULL,
-            signup_date TEXT NOT NULL
+            state TEXT NOT NULL,
+            postal_code TEXT NOT NULL,
+            region TEXT NOT NULL
         )
         """,
         """
@@ -248,50 +239,47 @@ def _create_tables(conn) -> None:
             product_id TEXT PRIMARY KEY,
             product_name TEXT NOT NULL,
             category TEXT NOT NULL,
-            unit_price REAL NOT NULL
+            sub_category TEXT NOT NULL
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS fact_orders (
             order_id TEXT PRIMARY KEY,
-            customer_id TEXT NOT NULL,
             order_date TEXT NOT NULL,
-            status TEXT NOT NULL,
-            payment_method TEXT NOT NULL,
-            total_amount REAL NOT NULL,
+            ship_date TEXT NOT NULL,
+            ship_mode TEXT NOT NULL,
+            customer_id TEXT NOT NULL,
+            segment TEXT NOT NULL,
+            country TEXT NOT NULL,
+            city TEXT NOT NULL,
+            state TEXT NOT NULL,
+            region TEXT NOT NULL,
             item_count INTEGER NOT NULL,
+            sales_total NUMERIC(14, 4) NOT NULL,
+            profit_total NUMERIC(14, 4) NOT NULL,
             FOREIGN KEY (customer_id) REFERENCES dim_customers(customer_id)
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS fact_order_items (
-            item_id TEXT PRIMARY KEY,
+            item_id INTEGER PRIMARY KEY,
             order_id TEXT NOT NULL,
             product_id TEXT NOT NULL,
+            sales_amount NUMERIC(14, 4) NOT NULL,
             quantity INTEGER NOT NULL,
-            unit_price REAL NOT NULL,
-            line_total REAL NOT NULL,
+            discount NUMERIC(6, 4) NOT NULL,
+            profit NUMERIC(14, 4) NOT NULL,
             FOREIGN KEY (order_id) REFERENCES fact_orders(order_id),
             FOREIGN KEY (product_id) REFERENCES dim_products(product_id)
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS fact_payments (
-            payment_id TEXT PRIMARY KEY,
-            order_id TEXT NOT NULL,
-            payment_date TEXT NOT NULL,
-            payment_method TEXT NOT NULL,
-            payment_status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            FOREIGN KEY (order_id) REFERENCES fact_orders(order_id)
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS daily_sales (
             order_date TEXT PRIMARY KEY,
             orders_count INTEGER NOT NULL,
-            revenue REAL NOT NULL,
-            avg_order_value REAL NOT NULL
+            revenue NUMERIC(14, 4) NOT NULL,
+            profit NUMERIC(14, 4) NOT NULL,
+            avg_order_value NUMERIC(14, 4) NOT NULL
         )
         """,
         """
@@ -299,8 +287,10 @@ def _create_tables(conn) -> None:
             product_id TEXT PRIMARY KEY,
             product_name TEXT NOT NULL,
             category TEXT NOT NULL,
+            sub_category TEXT NOT NULL,
             units_sold INTEGER NOT NULL,
-            revenue REAL NOT NULL
+            revenue NUMERIC(14, 4) NOT NULL,
+            profit NUMERIC(14, 4) NOT NULL
         )
         """,
         """
@@ -308,8 +298,10 @@ def _create_tables(conn) -> None:
             customer_id TEXT PRIMARY KEY,
             customer_name TEXT NOT NULL,
             city TEXT NOT NULL,
+            state TEXT NOT NULL,
             orders_count INTEGER NOT NULL,
-            lifetime_value REAL NOT NULL
+            lifetime_value NUMERIC(14, 4) NOT NULL,
+            profit NUMERIC(14, 4) NOT NULL
         )
         """,
     ]
@@ -317,29 +309,30 @@ def _create_tables(conn) -> None:
         conn.execute(text(statement))
 
 
-def _replace_table(conn, table: str, rows: list[dict[str, object]]) -> None:
+def _replace_table(conn, table: str, df: pd.DataFrame) -> None:
     conn.execute(text(f"DELETE FROM {table}"))
-    if not rows:
+    if df.empty:
         return
-    columns = list(rows[0].keys())
-    column_sql = ", ".join(columns)
-    placeholders = ", ".join(f":{column}" for column in columns)
-    conn.execute(text(f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})"), rows)
+    # Use chunked inserts so PostgreSQL does not hit the 65k parameter limit.
+    df.to_sql(table, conn, if_exists="append", index=False, chunksize=1000)
 
 
 def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, int]:
+    url = make_url(config.database_url)
+    if url.drivername.startswith("sqlite") and url.database and url.database != ":memory:":
+        db_path = Path(url.database).expanduser()
+        if db_path.exists():
+            db_path.unlink()
+
     engine = create_database_engine(config.database_url)
     try:
         with engine.begin() as conn:
             _create_tables(conn)
 
-            # Clear existing data in dependency order so PostgreSQL and SQLite
-            # both accept repeated full refreshes.
             for table in [
                 "customer_summary",
                 "top_products",
                 "daily_sales",
-                "fact_payments",
                 "fact_order_items",
                 "fact_orders",
                 "dim_products",
@@ -349,91 +342,71 @@ def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, i
 
             _replace_table(conn, "dim_customers", cleaned.customers)
             _replace_table(conn, "dim_products", cleaned.products)
-
-            order_item_counts = Counter(item["order_id"] for item in cleaned.order_items)
-            order_totals = Counter()
-            for item in cleaned.order_items:
-                order_totals[item["order_id"]] += float(item["line_total"])
-
-            fact_orders = []
-            for order in cleaned.orders:
-                fact_orders.append(
-                    {
-                        "order_id": order["order_id"],
-                        "customer_id": order["customer_id"],
-                        "order_date": order["order_date"],
-                        "status": order["status"],
-                        "payment_method": order["payment_method"],
-                        "total_amount": round(order_totals.get(order["order_id"], 0.0), 2),
-                        "item_count": int(order_item_counts.get(order["order_id"], 0)),
-                    }
-                )
-            _replace_table(conn, "fact_orders", fact_orders)
+            _replace_table(conn, "fact_orders", cleaned.orders)
             _replace_table(conn, "fact_order_items", cleaned.order_items)
-            _replace_table(conn, "fact_payments", cleaned.payments)
 
-            conn.execute(text("DELETE FROM daily_sales"))
             conn.execute(
                 text(
                     """
-                INSERT INTO daily_sales (order_date, orders_count, revenue, avg_order_value)
-                SELECT
-                    order_date,
-                    COUNT(*) AS orders_count,
-                    ROUND(CAST(SUM(total_amount) AS numeric), 2) AS revenue,
-                    ROUND(CAST(AVG(total_amount) AS numeric), 2) AS avg_order_value
-                FROM fact_orders
-                WHERE status = 'completed'
-                GROUP BY order_date
-                ORDER BY order_date
+                    INSERT INTO daily_sales (order_date, orders_count, revenue, profit, avg_order_value)
+                    SELECT
+                        order_date,
+                        COUNT(*) AS orders_count,
+                        SUM(sales_total) AS revenue,
+                        SUM(profit_total) AS profit,
+                        AVG(sales_total) AS avg_order_value
+                    FROM fact_orders
+                    GROUP BY order_date
+                    ORDER BY order_date
                     """
                 )
             )
 
-            conn.execute(text("DELETE FROM top_products"))
             conn.execute(
                 text(
                     """
-                INSERT INTO top_products (product_id, product_name, category, units_sold, revenue)
-                SELECT
-                    p.product_id,
-                    p.product_name,
-                    p.category,
-                    SUM(i.quantity) AS units_sold,
-                    ROUND(CAST(SUM(i.line_total) AS numeric), 2) AS revenue
-                FROM fact_order_items i
-                JOIN dim_products p ON p.product_id = i.product_id
-                GROUP BY p.product_id, p.product_name, p.category
-                ORDER BY revenue DESC
-                LIMIT 10
+                    INSERT INTO top_products (product_id, product_name, category, sub_category, units_sold, revenue, profit)
+                    SELECT
+                        p.product_id,
+                        p.product_name,
+                        p.category,
+                        p.sub_category,
+                        SUM(i.quantity) AS units_sold,
+                        SUM(i.sales_amount) AS revenue,
+                        SUM(i.profit) AS profit
+                    FROM fact_order_items i
+                    JOIN dim_products p ON p.product_id = i.product_id
+                    GROUP BY p.product_id, p.product_name, p.category, p.sub_category
+                    ORDER BY revenue DESC
+                    LIMIT 10
                     """
                 )
             )
 
-            conn.execute(text("DELETE FROM customer_summary"))
             conn.execute(
                 text(
                     """
-                INSERT INTO customer_summary (customer_id, customer_name, city, orders_count, lifetime_value)
-                SELECT
-                    c.customer_id,
-                    c.customer_name,
-                    c.city,
-                    COUNT(o.order_id) AS orders_count,
-                    ROUND(CAST(COALESCE(SUM(o.total_amount), 0) AS numeric), 2) AS lifetime_value
-                FROM dim_customers c
-                LEFT JOIN fact_orders o ON o.customer_id = c.customer_id AND o.status = 'completed'
-                GROUP BY c.customer_id, c.customer_name, c.city
-                """
+                    INSERT INTO customer_summary (customer_id, customer_name, city, state, orders_count, lifetime_value, profit)
+                    SELECT
+                        c.customer_id,
+                        c.customer_name,
+                        c.city,
+                        c.state,
+                        COUNT(o.order_id) AS orders_count,
+                        COALESCE(SUM(o.sales_total), 0) AS lifetime_value,
+                        COALESCE(SUM(o.profit_total), 0) AS profit
+                    FROM dim_customers c
+                    LEFT JOIN fact_orders o ON o.customer_id = c.customer_id
+                    GROUP BY c.customer_id, c.customer_name, c.city, c.state
+                    """
                 )
             )
 
             return {
-                "customers": len(cleaned.customers),
-                "products": len(cleaned.products),
-                "orders": len(cleaned.orders),
-                "order_items": len(cleaned.order_items),
-                "payments": len(cleaned.payments),
+                "customers": int(cleaned.customers.shape[0]),
+                "products": int(cleaned.products.shape[0]),
+                "orders": int(cleaned.orders.shape[0]),
+                "order_items": int(cleaned.order_items.shape[0]),
             }
     finally:
         engine.dispose()
@@ -443,46 +416,45 @@ def collect_metrics(database_url: str) -> dict[str, object]:
     engine = create_database_engine(database_url)
     try:
         with engine.connect() as conn:
-            orders_count = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE status = 'completed'")).scalar_one()
-            total_revenue = conn.execute(
-                text(
-                    "SELECT COALESCE(ROUND(CAST(SUM(total_amount) AS numeric), 2), 0) "
-                    "FROM fact_orders WHERE status = 'completed'"
-                )
-            ).scalar_one()
+            orders_count = conn.execute(text("SELECT COUNT(*) FROM fact_orders")).scalar_one()
+            total_revenue = conn.execute(text("SELECT COALESCE(SUM(sales_total), 0) FROM fact_orders")).scalar_one()
+            total_profit = conn.execute(text("SELECT COALESCE(SUM(profit_total), 0) FROM fact_orders")).scalar_one()
             customers_count = conn.execute(text("SELECT COUNT(*) FROM dim_customers")).scalar_one()
             top_category = conn.execute(
                 text(
                     """
-                SELECT p.category, ROUND(CAST(SUM(i.line_total) AS numeric), 2) AS revenue
-                FROM fact_order_items i
-                JOIN dim_products p ON p.product_id = i.product_id
-                GROUP BY p.category
-                ORDER BY revenue DESC
-                LIMIT 1
+                    SELECT p.category, SUM(i.sales_amount) AS revenue
+                    FROM fact_order_items i
+                    JOIN dim_products p ON p.product_id = i.product_id
+                    GROUP BY p.category
+                    ORDER BY revenue DESC
+                    LIMIT 1
                     """
                 )
             ).mappings().first()
-            daily_peak = conn.execute(
+            best_day = conn.execute(
                 text("SELECT order_date, revenue FROM daily_sales ORDER BY revenue DESC, order_date ASC LIMIT 1")
+            ).mappings().first()
+            top_state = conn.execute(
+                text(
+                    """
+                    SELECT state, SUM(sales_total) AS revenue
+                    FROM fact_orders
+                    GROUP BY state
+                    ORDER BY revenue DESC
+                    LIMIT 1
+                    """
+                )
             ).mappings().first()
 
             return {
-                "completed_orders": int(orders_count),
-                "revenue": float(total_revenue),
+                "orders": int(orders_count),
+                "revenue": float(total_revenue or 0.0),
+                "profit": float(total_profit or 0.0),
                 "customers": int(customers_count),
-                "top_category": {
-                    "category": top_category["category"],
-                    "revenue": float(top_category["revenue"]),
-                }
-                if top_category
-                else None,
-                "best_day": {
-                    "order_date": daily_peak["order_date"],
-                    "revenue": float(daily_peak["revenue"]),
-                }
-                if daily_peak
-                else None,
+                "top_category": {"category": top_category["category"], "revenue": float(top_category["revenue"])} if top_category else None,
+                "best_day": {"order_date": best_day["order_date"], "revenue": float(best_day["revenue"])} if best_day else None,
+                "top_state": {"state": top_state["state"], "revenue": float(top_state["revenue"])} if top_state else None,
             }
     finally:
         engine.dispose()
@@ -493,31 +465,52 @@ def run_data_quality_checks(database_url: str) -> list[str]:
     engine = create_database_engine(database_url)
     try:
         with engine.connect() as conn:
-            null_customer_emails = conn.execute(
-                text("SELECT COUNT(*) FROM dim_customers WHERE email IS NULL OR email = ''")
-            ).scalar_one()
-            negative_totals = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE total_amount < 0")).scalar_one()
-            empty_order_items = conn.execute(
-                text("SELECT COUNT(*) FROM fact_order_items WHERE quantity <= 0 OR line_total <= 0")
-            ).scalar_one()
-            orphan_payments = conn.execute(
+            null_customers = conn.execute(text("SELECT COUNT(*) FROM dim_customers WHERE customer_id IS NULL OR city IS NULL")).scalar_one()
+            null_products = conn.execute(text("SELECT COUNT(*) FROM dim_products WHERE product_id IS NULL OR category IS NULL")).scalar_one()
+            negative_sales = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE sales_total <= 0")).scalar_one()
+            orphan_items = conn.execute(
                 text(
                     """
-                SELECT COUNT(*)
-                FROM fact_payments p
-                LEFT JOIN fact_orders o ON o.order_id = p.order_id
-                WHERE o.order_id IS NULL
+                    SELECT COUNT(*)
+                    FROM fact_order_items i
+                    LEFT JOIN fact_orders o ON o.order_id = i.order_id
+                    WHERE o.order_id IS NULL
                     """
                 )
             ).scalar_one()
-            if null_customer_emails:
-                issues.append("Hay clientes con email vacio.")
-            if negative_totals:
-                issues.append("Hay pedidos con importe negativo.")
-            if empty_order_items:
-                issues.append("Hay lineas de pedido invalidas.")
-            if orphan_payments:
-                issues.append("Hay pagos sin pedido asociado.")
+            invalid_discount = conn.execute(
+                text("SELECT COUNT(*) FROM fact_order_items WHERE discount < 0 OR discount > 1")
+            ).scalar_one()
+            order_mismatches = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT
+                            o.order_id,
+                            ABS(COALESCE(o.sales_total, 0) - COALESCE(SUM(i.sales_amount), 0)) AS sales_diff,
+                            ABS(COALESCE(o.profit_total, 0) - COALESCE(SUM(i.profit), 0)) AS profit_diff
+                        FROM fact_orders o
+                        LEFT JOIN fact_order_items i ON i.order_id = o.order_id
+                        GROUP BY o.order_id, o.sales_total, o.profit_total
+                    ) diffs
+                    WHERE sales_diff > 0.01 OR profit_diff > 0.01
+                    """
+                )
+            ).scalar_one()
+
+            if null_customers:
+                issues.append("Hay clientes con campos vacios.")
+            if null_products:
+                issues.append("Hay productos con campos vacios.")
+            if negative_sales:
+                issues.append("Hay pedidos con ventas no validas.")
+            if orphan_items:
+                issues.append("Hay lineas de pedido sin pedido padre.")
+            if invalid_discount:
+                issues.append("Hay descuentos fuera de rango.")
+            if order_mismatches:
+                issues.append("Hay diferencias entre los totales de pedidos y sus lineas.")
             return issues
     finally:
         engine.dispose()

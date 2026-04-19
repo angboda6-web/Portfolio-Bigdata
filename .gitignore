@@ -1,11 +1,48 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyd
+*.so
+.python-version
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Environment files
 .env
-data/raw/
-data/processed/
+.env.*
+!.env.example
+
+# Generated project outputs
+data/
 warehouse/
 artifacts/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+streamlit*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Optional generated images
 assets/*.png
