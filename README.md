@@ -1,14 +1,20 @@
 # Retail ETL Portfolio Project
 
+![Project cover](assets/cover.svg)
+
 Proyecto de portfolio para Big Data centrado en un flujo batch ETL reproducible.
 
-## What it shows
+## Overview
 
 - Synthetic e-commerce style data generation
 - Data cleaning and validation
 - Loading into a local SQLite warehouse
 - Analytical SQL metrics
 - Automatic report generation
+
+## Preview
+
+![Pipeline snapshot](assets/project-snapshot.svg)
 
 ## Architecture
 
@@ -27,6 +33,7 @@ flowchart LR
 - `src/warehouse.py`: cleaning, loading and SQL modeling
 - `src/report.py`: builds the final report
 - `tests/test_pipeline.py`: end-to-end and unit tests
+- `assets/`: visual cover and snapshot for the README
 
 ## Requirements
 
@@ -42,6 +49,12 @@ Run the full pipeline:
 python main.py run
 ```
 
+Run with logs and custom generation settings:
+
+```powershell
+python main.py run --verbose --seed 42 --customers 80 --products 18 --days 90 --orders-per-day 8
+```
+
 Generate only raw data:
 
 ```powershell
@@ -54,23 +67,6 @@ Build only the report from an existing warehouse:
 python main.py report
 ```
 
-## Optional parameters
-
-You can tune the generated dataset:
-
-```powershell
-python main.py run --seed 42 --customers 80 --products 18 --days 90 --orders-per-day 8
-```
-
-Useful flags:
-
-- `--seed`: makes the synthetic data reproducible
-- `--customers`: number of customers to generate
-- `--products`: number of products to generate
-- `--days`: number of days in the dataset
-- `--orders-per-day`: average daily order volume
-- `--verbose`: shows step-by-step logs in the terminal
-
 ## Outputs
 
 After running the pipeline you will see:
@@ -81,12 +77,22 @@ After running the pipeline you will see:
 - `artifacts/report.md`: final report
 - `artifacts/metrics.json`: summary metrics
 
-## Example results
+## Current results
 
 - Completed orders: 576
 - Revenue: 250075.86
 - Top category: Fitness
 - Best day: 2024-02-11
+
+## Future configuration
+
+The project currently uses SQLite, but `.env.example` is already included to make a future move to PostgreSQL or another database straightforward.
+
+Copy it to `.env` when you need it:
+
+```powershell
+Copy-Item .env.example .env
+```
 
 ## Why this project is useful for a portfolio
 
