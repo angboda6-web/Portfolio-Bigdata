@@ -67,6 +67,30 @@ Build only the report from an existing warehouse:
 python main.py report
 ```
 
+## Run with Docker
+
+Build the image:
+
+```powershell
+docker build -t retail-etl-portfolio .
+```
+
+Run it in a disposable container:
+
+```powershell
+docker run --rm -v "${PWD}:/app" retail-etl-portfolio
+```
+
+Or use Docker Compose:
+
+```powershell
+docker compose up --build
+```
+
+The compose setup mounts the current project folder into the container, so the generated `data/`, `warehouse/` and `artifacts/` folders remain available on your machine.
+
+If Docker Desktop is not installed yet, install it first and then rerun the commands above.
+
 ## Outputs
 
 After running the pipeline you will see:
@@ -108,4 +132,3 @@ Copy-Item .env.example .env
 3. Move SQLite to PostgreSQL.
 4. Add orchestration with Airflow or Prefect.
 5. Add a dashboard with Streamlit or Power BI.
-
