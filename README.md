@@ -1,68 +1,105 @@
-# Portfolio Project 1: Retail ETL Pipeline
+# Retail ETL Portfolio Project
 
-Proyecto de portfolio para Big Data centrado en un flujo **batch ETL** reproducible.
+Proyecto de portfolio para Big Data centrado en un flujo batch ETL reproducible.
 
-## Qué demuestra
+## What it shows
 
-- Ingesta de datos sintéticos con estructura realista de e-commerce
-- Limpieza y estandarización de datos
-- Carga en un almacén local con SQLite
-- Cálculo de métricas analíticas con SQL
-- Generación de un informe final para enseñar resultados
+- Synthetic e-commerce style data generation
+- Data cleaning and validation
+- Loading into a local SQLite warehouse
+- Analytical SQL metrics
+- Automatic report generation
 
-## Arquitectura
+## Architecture
 
-`raw CSV -> cleaning -> SQLite warehouse -> analytical tables -> report`
+```mermaid
+flowchart LR
+    A["Raw CSV files"] --> B["Cleaning and validation"]
+    B --> C["SQLite warehouse"]
+    C --> D["Analytical tables"]
+    D --> E["Markdown report + metrics"]
+```
 
-## Estructura
+## Project structure
 
-- `main.py`: punto de entrada
-- `src/data_generator.py`: crea datos brutos
-- `src/warehouse.py`: limpieza, carga y modelado SQL
-- `src/report.py`: crea el informe final
-- `tests/test_pipeline.py`: pruebas básicas del pipeline
+- `main.py`: command-line entry point
+- `src/data_generator.py`: creates raw datasets
+- `src/warehouse.py`: cleaning, loading and SQL modeling
+- `src/report.py`: builds the final report
+- `tests/test_pipeline.py`: end-to-end and unit tests
 
-## Requisitos
+## Requirements
 
-- Python 3.10+
+- Python 3.10 or newer
 
-No hace falta instalar librerías externas: este proyecto usa solo la librería estándar de Python.
+The project only uses the Python standard library.
 
-## Ejecución
+## How to run
 
-Generar datos y ejecutar el pipeline completo:
+Run the full pipeline:
 
-```bash
+```powershell
 python main.py run
 ```
 
-Generar solo datos brutos:
+Generate only raw data:
 
-```bash
+```powershell
 python main.py generate
 ```
 
-Crear solo el informe a partir de la base de datos ya construida:
+Build only the report from an existing warehouse:
 
-```bash
+```powershell
 python main.py report
 ```
 
-## Salidas
+## Optional parameters
 
-Después de ejecutar el pipeline tendrás:
+You can tune the generated dataset:
 
-- `data/raw/`: CSV originales
-- `data/processed/`: CSV limpios
-- `warehouse/sales.db`: base SQLite
-- `artifacts/report.md`: informe final
-- `artifacts/metrics.json`: métricas resumidas
+```powershell
+python main.py run --seed 42 --customers 80 --products 18 --days 90 --orders-per-day 8
+```
 
-## Ideas para mejorar el portfolio
+Useful flags:
 
-1. Cambiar el dataset sintético por una API pública.
-2. Añadir orquestación con Airflow o Prefect.
-3. Migrar SQLite a PostgreSQL.
-4. Añadir tests de calidad de datos más estrictos.
-5. Crear un dashboard con Streamlit o Power BI.
+- `--seed`: makes the synthetic data reproducible
+- `--customers`: number of customers to generate
+- `--products`: number of products to generate
+- `--days`: number of days in the dataset
+- `--orders-per-day`: average daily order volume
+- `--verbose`: shows step-by-step logs in the terminal
+
+## Outputs
+
+After running the pipeline you will see:
+
+- `data/raw/`: raw CSV files
+- `data/processed/`: cleaned CSV files
+- `warehouse/sales.db`: SQLite warehouse
+- `artifacts/report.md`: final report
+- `artifacts/metrics.json`: summary metrics
+
+## Example results
+
+- Completed orders: 576
+- Revenue: 250075.86
+- Top category: Fitness
+- Best day: 2024-02-11
+
+## Why this project is useful for a portfolio
+
+- Shows batch data engineering fundamentals
+- Demonstrates SQL and data modeling
+- Includes testing and reproducibility
+- Generates business-oriented outputs, not just raw code
+
+## Next improvements
+
+1. Replace synthetic data with a real API source.
+2. Add Docker for one-command reproducibility.
+3. Move SQLite to PostgreSQL.
+4. Add orchestration with Airflow or Prefect.
+5. Add a dashboard with Streamlit or Power BI.
 
