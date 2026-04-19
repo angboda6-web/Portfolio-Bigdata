@@ -134,6 +134,12 @@ streamlit run streamlit_app.py
 
 The dashboard reads the same warehouse used by the pipeline inside Docker. If you want PostgreSQL outside Docker, set `DATABASE_URL` before launching Streamlit.
 
+The dashboard includes filters for:
+
+- date range
+- city
+- category
+
 ## Outputs
 
 After running the pipeline you will see:
