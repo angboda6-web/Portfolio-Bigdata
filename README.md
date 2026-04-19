@@ -80,6 +80,22 @@ Open the dashboard:
 streamlit run streamlit_app.py
 ```
 
+## VS Code quick start
+
+If you are opening the project in Visual Studio Code, the shortest path is:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python main.py run --verbose
+streamlit run streamlit_app.py
+```
+
+Then open:
+
+- [http://localhost:8501](http://localhost:8501)
+
 ## Optional PostgreSQL
 
 Set `DATABASE_URL` if you want PostgreSQL instead of SQLite:
@@ -146,6 +162,12 @@ The dashboard is configurable with:
 - Top category: Technology
 - Top state: California
 - Best day: 2014-03-18
+
+## Troubleshooting
+
+- If the dashboard does not load, make sure `python main.py run --verbose` finished successfully first.
+- If Streamlit is already running, close the terminal that launched it and start it again.
+- If PowerShell blocks the virtual environment activation, run `Set-ExecutionPolicy -Scope Process RemoteSigned` and try again.
 
 ## Next improvements
 
