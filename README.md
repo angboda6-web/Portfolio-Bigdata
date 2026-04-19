@@ -4,6 +4,8 @@
 
 Portfolio project built around a real public ecommerce dataset and an ETL pipeline that can run locally or with PostgreSQL.
 
+The cover and preview images are aligned with the current warehouse outputs so the repository reflects what the project actually produces today.
+
 ## What it includes
 
 - Public dataset download from GitHub
@@ -160,6 +162,8 @@ The dashboard is configurable with:
 - Profit: 286,397.0217
 - Customers: 793
 - Top category: Technology
+- Top product: Canon imageCLASS 2200 Advanced Copier
+- Best customer: Sean Miller
 - Top state: California
 - Best day: 2014-03-18
 
