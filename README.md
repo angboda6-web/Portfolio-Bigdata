@@ -107,7 +107,19 @@ docker run --rm -v "${PWD}:/app" retail-etl-portfolio
 Or use Docker Compose:
 
 ```powershell
-docker compose up --build
+docker compose --profile pipeline up --build pipeline
+```
+
+Run only the dashboard after the pipeline has populated the warehouse volume:
+
+```powershell
+docker compose --profile dashboard up --build dashboard
+```
+
+Stop the stack and remove the PostgreSQL volume if you want a clean reset:
+
+```powershell
+docker compose down -v
 ```
 
 If Docker Desktop is not installed yet, install it first and rerun the commands above.
@@ -120,7 +132,7 @@ Start Streamlit:
 streamlit run streamlit_app.py
 ```
 
-The dashboard reads the same warehouse used by the pipeline. If you want PostgreSQL, set `DATABASE_URL` before launching Streamlit.
+The dashboard reads the same warehouse used by the pipeline inside Docker. If you want PostgreSQL outside Docker, set `DATABASE_URL` before launching Streamlit.
 
 ## Outputs
 
