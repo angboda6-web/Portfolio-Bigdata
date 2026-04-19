@@ -76,6 +76,20 @@ $env:DATABASE_URL="postgresql+psycopg://postgres:change_me@localhost:5432/portfo
 python main.py run
 ```
 
+Use the local PostgreSQL instance already installed on this machine:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then edit `.env` so `DATABASE_URL` points to:
+
+```powershell
+postgresql+psycopg://portfolio_user:Portfolio2026!@localhost:5432/portfolio_db
+```
+
+After that, `python main.py run` and `streamlit run streamlit_app.py` will use PostgreSQL automatically.
+
 ## Run with Docker
 
 Build the image:
@@ -150,4 +164,3 @@ Copy-Item .env.example .env
 3. Add more dashboard filters and KPIs.
 4. Add incremental loading.
 5. Move fully to PostgreSQL in production mode.
-

@@ -129,7 +129,8 @@ class PipelineTests(unittest.TestCase):
     def test_end_to_end_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
-            config = default_config(base_dir)
+            sqlite_url = f"sqlite:///{(base_dir / 'warehouse' / 'sales.db').resolve().as_posix()}"
+            config = default_config(base_dir, database_url=sqlite_url)
             config.raw_dir.mkdir(parents=True, exist_ok=True)
             config.processed_dir.mkdir(parents=True, exist_ok=True)
             config.warehouse_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +153,8 @@ class PipelineTests(unittest.TestCase):
     def test_data_generation_is_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
-            config = default_config(base_dir)
+            sqlite_url = f"sqlite:///{(base_dir / 'warehouse' / 'sales.db').resolve().as_posix()}"
+            config = default_config(base_dir, database_url=sqlite_url)
             config.raw_dir.mkdir(parents=True, exist_ok=True)
 
             first = generate_raw_files(config.raw_dir, seed=99, customer_count=5, product_count=4, days=3, orders_per_day=2)

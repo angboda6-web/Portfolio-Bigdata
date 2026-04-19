@@ -333,6 +333,20 @@ def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, i
         with engine.begin() as conn:
             _create_tables(conn)
 
+            # Clear existing data in dependency order so PostgreSQL and SQLite
+            # both accept repeated full refreshes.
+            for table in [
+                "customer_summary",
+                "top_products",
+                "daily_sales",
+                "fact_payments",
+                "fact_order_items",
+                "fact_orders",
+                "dim_products",
+                "dim_customers",
+            ]:
+                conn.execute(text(f"DELETE FROM {table}"))
+
             _replace_table(conn, "dim_customers", cleaned.customers)
             _replace_table(conn, "dim_products", cleaned.products)
 
@@ -366,8 +380,8 @@ def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, i
                 SELECT
                     order_date,
                     COUNT(*) AS orders_count,
-                    ROUND(SUM(total_amount), 2) AS revenue,
-                    ROUND(AVG(total_amount), 2) AS avg_order_value
+                    ROUND(CAST(SUM(total_amount) AS numeric), 2) AS revenue,
+                    ROUND(CAST(AVG(total_amount) AS numeric), 2) AS avg_order_value
                 FROM fact_orders
                 WHERE status = 'completed'
                 GROUP BY order_date
@@ -386,7 +400,7 @@ def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, i
                     p.product_name,
                     p.category,
                     SUM(i.quantity) AS units_sold,
-                    ROUND(SUM(i.line_total), 2) AS revenue
+                    ROUND(CAST(SUM(i.line_total) AS numeric), 2) AS revenue
                 FROM fact_order_items i
                 JOIN dim_products p ON p.product_id = i.product_id
                 GROUP BY p.product_id, p.product_name, p.category
@@ -406,11 +420,11 @@ def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, i
                     c.customer_name,
                     c.city,
                     COUNT(o.order_id) AS orders_count,
-                    ROUND(COALESCE(SUM(o.total_amount), 0), 2) AS lifetime_value
+                    ROUND(CAST(COALESCE(SUM(o.total_amount), 0) AS numeric), 2) AS lifetime_value
                 FROM dim_customers c
                 LEFT JOIN fact_orders o ON o.customer_id = c.customer_id AND o.status = 'completed'
                 GROUP BY c.customer_id, c.customer_name, c.city
-                    """
+                """
                 )
             )
 
@@ -431,13 +445,16 @@ def collect_metrics(database_url: str) -> dict[str, object]:
         with engine.connect() as conn:
             orders_count = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE status = 'completed'")).scalar_one()
             total_revenue = conn.execute(
-                text("SELECT COALESCE(ROUND(SUM(total_amount), 2), 0) FROM fact_orders WHERE status = 'completed'")
+                text(
+                    "SELECT COALESCE(ROUND(CAST(SUM(total_amount) AS numeric), 2), 0) "
+                    "FROM fact_orders WHERE status = 'completed'"
+                )
             ).scalar_one()
             customers_count = conn.execute(text("SELECT COUNT(*) FROM dim_customers")).scalar_one()
             top_category = conn.execute(
                 text(
                     """
-                SELECT p.category, ROUND(SUM(i.line_total), 2) AS revenue
+                SELECT p.category, ROUND(CAST(SUM(i.line_total) AS numeric), 2) AS revenue
                 FROM fact_order_items i
                 JOIN dim_products p ON p.product_id = i.product_id
                 GROUP BY p.category
@@ -454,8 +471,18 @@ def collect_metrics(database_url: str) -> dict[str, object]:
                 "completed_orders": int(orders_count),
                 "revenue": float(total_revenue),
                 "customers": int(customers_count),
-                "top_category": dict(top_category) if top_category else None,
-                "best_day": dict(daily_peak) if daily_peak else None,
+                "top_category": {
+                    "category": top_category["category"],
+                    "revenue": float(top_category["revenue"]),
+                }
+                if top_category
+                else None,
+                "best_day": {
+                    "order_date": daily_peak["order_date"],
+                    "revenue": float(daily_peak["revenue"]),
+                }
+                if daily_peak
+                else None,
             }
     finally:
         engine.dispose()

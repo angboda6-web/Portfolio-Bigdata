@@ -23,7 +23,7 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
                 SELECT
                     COUNT(*) AS total_orders,
                     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
-                    ROUND(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END), 2) AS revenue
+                    ROUND(CAST(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END) AS numeric), 2) AS revenue
                 FROM fact_orders
                     """
                 )
@@ -44,9 +44,31 @@ def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
         "orders": int(totals["total_orders"]),
         "completed_orders": int(totals["completed_orders"]),
         "revenue": float(totals["revenue"] or 0.0),
-        "best_customer": dict(customer) if customer else None,
-        "top_products": [dict(row) for row in top_products],
-        "sample_daily_sales": [dict(row) for row in daily],
+        "best_customer": {
+            "customer_name": customer["customer_name"],
+            "city": customer["city"],
+            "lifetime_value": float(customer["lifetime_value"]),
+        }
+        if customer
+        else None,
+        "top_products": [
+            {
+                "product_name": row["product_name"],
+                "category": row["category"],
+                "units_sold": int(row["units_sold"]),
+                "revenue": float(row["revenue"]),
+            }
+            for row in top_products
+        ],
+        "sample_daily_sales": [
+            {
+                "order_date": row["order_date"],
+                "orders_count": int(row["orders_count"]),
+                "revenue": float(row["revenue"]),
+                "avg_order_value": float(row["avg_order_value"]),
+            }
+            for row in daily
+        ],
     }
 
     metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
