@@ -8,9 +8,10 @@ Proyecto de portfolio para Big Data centrado en un flujo batch ETL reproducible.
 
 - Synthetic e-commerce style data generation
 - Data cleaning and validation
-- Loading into a local SQLite warehouse
+- Loading into a local SQLite or PostgreSQL warehouse
 - Analytical SQL metrics
 - Automatic report generation
+- Streamlit dashboard for interactive exploration
 
 ## Preview
 
@@ -21,9 +22,10 @@ Proyecto de portfolio para Big Data centrado en un flujo batch ETL reproducible.
 ```mermaid
 flowchart LR
     A["Raw CSV files"] --> B["Cleaning and validation"]
-    B --> C["SQLite warehouse"]
+    B --> C["SQLite or PostgreSQL warehouse"]
     C --> D["Analytical tables"]
     D --> E["Markdown report + metrics"]
+    D --> F["Streamlit dashboard"]
 ```
 
 ## Project structure
@@ -32,14 +34,14 @@ flowchart LR
 - `src/data_generator.py`: creates raw datasets
 - `src/warehouse.py`: cleaning, loading and SQL modeling
 - `src/report.py`: builds the final report
+- `streamlit_app.py`: interactive dashboard
 - `tests/test_pipeline.py`: end-to-end and unit tests
 - `assets/`: visual cover and snapshot for the README
 
 ## Requirements
 
 - Python 3.10 or newer
-
-The project only uses the Python standard library.
+- Packages from `requirements.txt`
 
 ## How to run
 
@@ -67,6 +69,13 @@ Build only the report from an existing warehouse:
 python main.py report
 ```
 
+Use a PostgreSQL warehouse instead of SQLite:
+
+```powershell
+$env:DATABASE_URL="postgresql+psycopg://postgres:change_me@localhost:5432/portfolio_db"
+python main.py run
+```
+
 ## Run with Docker
 
 Build the image:
@@ -87,9 +96,17 @@ Or use Docker Compose:
 docker compose up --build
 ```
 
-The compose setup mounts the current project folder into the container, so the generated `data/`, `warehouse/` and `artifacts/` folders remain available on your machine.
+If Docker Desktop is not installed yet, install it first and rerun the commands above.
 
-If Docker Desktop is not installed yet, install it first and then rerun the commands above.
+## Run the dashboard
+
+Start Streamlit:
+
+```powershell
+streamlit run streamlit_app.py
+```
+
+The dashboard reads the same warehouse used by the pipeline. If you want PostgreSQL, set `DATABASE_URL` before launching Streamlit.
 
 ## Outputs
 
@@ -97,7 +114,7 @@ After running the pipeline you will see:
 
 - `data/raw/`: raw CSV files
 - `data/processed/`: cleaned CSV files
-- `warehouse/sales.db`: SQLite warehouse
+- `warehouse/sales.db`: SQLite warehouse when using the default database
 - `artifacts/report.md`: final report
 - `artifacts/metrics.json`: summary metrics
 
@@ -110,7 +127,7 @@ After running the pipeline you will see:
 
 ## Future configuration
 
-The project currently uses SQLite, but `.env.example` is already included to make a future move to PostgreSQL or another database straightforward.
+`.env.example` is included to make a future move to PostgreSQL or another database straightforward.
 
 Copy it to `.env` when you need it:
 
@@ -124,11 +141,13 @@ Copy-Item .env.example .env
 - Demonstrates SQL and data modeling
 - Includes testing and reproducibility
 - Generates business-oriented outputs, not just raw code
+- Compatible with both SQLite and PostgreSQL
 
 ## Next improvements
 
 1. Replace synthetic data with a real API source.
-2. Add Docker for one-command reproducibility.
-3. Move SQLite to PostgreSQL.
-4. Add orchestration with Airflow or Prefect.
-5. Add a dashboard with Streamlit or Power BI.
+2. Add orchestration with Airflow or Prefect.
+3. Add more dashboard filters and KPIs.
+4. Add incremental loading.
+5. Move fully to PostgreSQL in production mode.
+

@@ -138,9 +138,9 @@ class PipelineTests(unittest.TestCase):
             generate_raw_files(config.raw_dir, seed=7, customer_count=20, product_count=8, days=10, orders_per_day=3)
             cleaned = load_and_clean(config.raw_dir, config.processed_dir)
             counts = build_warehouse(config, cleaned)
-            metrics = collect_metrics(config.db_path)
-            issues = run_data_quality_checks(config.db_path)
-            report_path, metrics_path = build_report(config.db_path, config.artifacts_dir)
+            metrics = collect_metrics(config.database_url)
+            issues = run_data_quality_checks(config.database_url)
+            report_path, metrics_path = build_report(config, config.artifacts_dir)
 
             self.assertGreater(counts["customers"], 0)
             self.assertGreater(counts["orders"], 0)

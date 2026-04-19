@@ -1,45 +1,53 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import closing
 from pathlib import Path
 
+from sqlalchemy import text
 
-def build_report(db_path: Path, output_dir: Path) -> tuple[Path, Path]:
+from .config import PipelineConfig
+from .db import create_database_engine
+
+
+def build_report(config: PipelineConfig, output_dir: Path) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "report.md"
     metrics_path = output_dir / "metrics.json"
 
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        totals = conn.execute(
-            """
-            SELECT
-                COUNT(*) AS total_orders,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
-                ROUND(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END), 2) AS revenue
-            FROM fact_orders
-            """
-        ).fetchone()
-        customer = conn.execute(
-            "SELECT customer_name, city, lifetime_value FROM customer_summary ORDER BY lifetime_value DESC LIMIT 1"
-        ).fetchone()
-        top_products = conn.execute(
-            "SELECT product_name, category, units_sold, revenue FROM top_products ORDER BY revenue DESC LIMIT 5"
-        ).fetchall()
-        daily = conn.execute(
-            "SELECT order_date, orders_count, revenue, avg_order_value FROM daily_sales ORDER BY order_date ASC LIMIT 5"
-        ).fetchall()
+    engine = create_database_engine(config.database_url)
+    try:
+        with engine.connect() as conn:
+            totals = conn.execute(
+                text(
+                    """
+                SELECT
+                    COUNT(*) AS total_orders,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
+                    ROUND(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END), 2) AS revenue
+                FROM fact_orders
+                    """
+                )
+            ).mappings().one()
+            customer = conn.execute(
+                text("SELECT customer_name, city, lifetime_value FROM customer_summary ORDER BY lifetime_value DESC LIMIT 1")
+            ).mappings().first()
+            top_products = conn.execute(
+                text("SELECT product_name, category, units_sold, revenue FROM top_products ORDER BY revenue DESC LIMIT 5")
+            ).mappings().all()
+            daily = conn.execute(
+                text("SELECT order_date, orders_count, revenue, avg_order_value FROM daily_sales ORDER BY order_date ASC LIMIT 5")
+            ).mappings().all()
+    finally:
+        engine.dispose()
 
-        metrics = {
-            "orders": int(totals["total_orders"]),
-            "completed_orders": int(totals["completed_orders"]),
-            "revenue": float(totals["revenue"] or 0.0),
-            "best_customer": dict(customer) if customer else None,
-            "top_products": [dict(row) for row in top_products],
-            "sample_daily_sales": [dict(row) for row in daily],
-        }
+    metrics = {
+        "orders": int(totals["total_orders"]),
+        "completed_orders": int(totals["completed_orders"]),
+        "revenue": float(totals["revenue"] or 0.0),
+        "best_customer": dict(customer) if customer else None,
+        "top_products": [dict(row) for row in top_products],
+        "sample_daily_sales": [dict(row) for row in daily],
+    }
 
     metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
 

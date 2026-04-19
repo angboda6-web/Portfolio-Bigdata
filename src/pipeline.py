@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import json
+import logging
 from pathlib import Path
 
 from .config import default_config
@@ -18,16 +18,18 @@ from .warehouse import (
 
 logger = logging.getLogger(__name__)
 
+
 def run_pipeline(
     base_dir: Path | None = None,
     *,
+    database_url: str | None = None,
     seed: int = 42,
     customers: int = 80,
     products: int = 18,
     days: int = 90,
     orders_per_day: int = 8,
 ) -> dict[str, object]:
-    config = default_config(base_dir)
+    config = default_config(base_dir, database_url=database_url)
     config.raw_dir.mkdir(parents=True, exist_ok=True)
     config.processed_dir.mkdir(parents=True, exist_ok=True)
     config.warehouse_dir.mkdir(parents=True, exist_ok=True)
@@ -47,11 +49,11 @@ def run_pipeline(
     logger.info("Building warehouse")
     counts = build_warehouse(config, cleaned)
     logger.info("Collecting metrics")
-    metrics = collect_metrics(config.db_path)
+    metrics = collect_metrics(config.database_url)
     logger.info("Running data quality checks")
-    issues = run_data_quality_checks(config.db_path)
+    issues = run_data_quality_checks(config.database_url)
     logger.info("Building report")
-    report_path, metrics_path = build_report(config.db_path, config.artifacts_dir)
+    report_path, metrics_path = build_report(config, config.artifacts_dir)
     persist_metrics(
         {
             "counts": counts,
@@ -86,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Pipeline action to execute",
     )
     parser.add_argument("--base-dir", dest="base_dir", default=None, help="Override the project base directory")
+    parser.add_argument("--database-url", dest="database_url", default=None, help="Override the database URL")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for synthetic data generation")
     parser.add_argument("--customers", type=int, default=80, help="Number of customers to generate")
     parser.add_argument("--products", type=int, default=18, help="Number of products to generate")
@@ -105,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     base_dir = Path(args.base_dir).resolve() if args.base_dir else None
-    config = default_config(base_dir)
+    config = default_config(base_dir, database_url=args.database_url)
 
     if args.command == "generate":
         files = generate_raw_files(
@@ -120,12 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "report":
-        report_path, metrics_path = build_report(config.db_path, config.artifacts_dir)
+        report_path, metrics_path = build_report(config, config.artifacts_dir)
         _print_summary({"report_path": str(report_path), "metrics_path": str(metrics_path)})
         return 0
 
     summary = run_pipeline(
         base_dir,
+        database_url=args.database_url,
         seed=args.seed,
         customers=args.customers,
         products=args.products,
@@ -134,3 +138,4 @@ def main(argv: list[str] | None = None) -> int:
     )
     _print_summary(summary)
     return 0
+

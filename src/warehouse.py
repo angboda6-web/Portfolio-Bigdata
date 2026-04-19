@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import csv
 import json
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
-from contextlib import closing
 from pathlib import Path
 
+from sqlalchemy import text
+
 from .config import PipelineConfig
+from .db import create_database_engine
 
 
 @dataclass(frozen=True)
@@ -92,10 +93,7 @@ def clean_products(raw_rows: list[dict[str, str]]) -> list[dict[str, object]]:
     return cleaned
 
 
-def clean_orders(
-    raw_rows: list[dict[str, str]],
-    valid_customers: set[str],
-) -> list[dict[str, object]]:
+def clean_orders(raw_rows: list[dict[str, str]], valid_customers: set[str]) -> list[dict[str, object]]:
     cleaned: list[dict[str, object]] = []
     seen: set[str] = set()
     allowed_status = {"completed", "cancelled", "returned"}
@@ -161,10 +159,7 @@ def clean_order_items(
     return cleaned
 
 
-def clean_payments(
-    raw_rows: list[dict[str, str]],
-    valid_completed_orders: set[str],
-) -> list[dict[str, object]]:
+def clean_payments(raw_rows: list[dict[str, str]], valid_completed_orders: set[str]) -> list[dict[str, object]]:
     cleaned: list[dict[str, object]] = []
     seen: set[str] = set()
     for row in raw_rows:
@@ -237,14 +232,7 @@ def load_and_clean(raw_dir: Path, processed_dir: Path) -> CleanedData:
     )
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _create_tables(conn: sqlite3.Connection) -> None:
+def _create_tables(conn) -> None:
     statements = [
         """
         CREATE TABLE IF NOT EXISTS dim_customers (
@@ -326,169 +314,186 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         """,
     ]
     for statement in statements:
-        conn.execute(statement)
+        conn.execute(text(statement))
 
 
-def _replace_table(conn: sqlite3.Connection, table: str, rows: list[dict[str, object]]) -> None:
-    conn.execute(f"DELETE FROM {table}")
+def _replace_table(conn, table: str, rows: list[dict[str, object]]) -> None:
+    conn.execute(text(f"DELETE FROM {table}"))
     if not rows:
         return
     columns = list(rows[0].keys())
-    placeholders = ",".join(["?"] * len(columns))
-    column_sql = ",".join(columns)
-    conn.executemany(
-        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
-        [[row[column] for column in columns] for row in rows],
-    )
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join(f":{column}" for column in columns)
+    conn.execute(text(f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})"), rows)
 
 
 def build_warehouse(config: PipelineConfig, cleaned: CleanedData) -> dict[str, int]:
-    with closing(_connect(config.db_path)) as conn:
-        _create_tables(conn)
+    engine = create_database_engine(config.database_url)
+    try:
+        with engine.begin() as conn:
+            _create_tables(conn)
 
-        _replace_table(conn, "dim_customers", cleaned.customers)
-        _replace_table(conn, "dim_products", cleaned.products)
+            _replace_table(conn, "dim_customers", cleaned.customers)
+            _replace_table(conn, "dim_products", cleaned.products)
 
-        order_item_counts = Counter(item["order_id"] for item in cleaned.order_items)
-        order_totals = Counter()
-        for item in cleaned.order_items:
-            order_totals[item["order_id"]] += float(item["line_total"])
+            order_item_counts = Counter(item["order_id"] for item in cleaned.order_items)
+            order_totals = Counter()
+            for item in cleaned.order_items:
+                order_totals[item["order_id"]] += float(item["line_total"])
 
-        fact_orders = []
-        for order in cleaned.orders:
-            fact_orders.append(
-                {
-                    "order_id": order["order_id"],
-                    "customer_id": order["customer_id"],
-                    "order_date": order["order_date"],
-                    "status": order["status"],
-                    "payment_method": order["payment_method"],
-                    "total_amount": round(order_totals.get(order["order_id"], 0.0), 2),
-                    "item_count": int(order_item_counts.get(order["order_id"], 0)),
-                }
+            fact_orders = []
+            for order in cleaned.orders:
+                fact_orders.append(
+                    {
+                        "order_id": order["order_id"],
+                        "customer_id": order["customer_id"],
+                        "order_date": order["order_date"],
+                        "status": order["status"],
+                        "payment_method": order["payment_method"],
+                        "total_amount": round(order_totals.get(order["order_id"], 0.0), 2),
+                        "item_count": int(order_item_counts.get(order["order_id"], 0)),
+                    }
+                )
+            _replace_table(conn, "fact_orders", fact_orders)
+            _replace_table(conn, "fact_order_items", cleaned.order_items)
+            _replace_table(conn, "fact_payments", cleaned.payments)
+
+            conn.execute(text("DELETE FROM daily_sales"))
+            conn.execute(
+                text(
+                    """
+                INSERT INTO daily_sales (order_date, orders_count, revenue, avg_order_value)
+                SELECT
+                    order_date,
+                    COUNT(*) AS orders_count,
+                    ROUND(SUM(total_amount), 2) AS revenue,
+                    ROUND(AVG(total_amount), 2) AS avg_order_value
+                FROM fact_orders
+                WHERE status = 'completed'
+                GROUP BY order_date
+                ORDER BY order_date
+                    """
+                )
             )
-        _replace_table(conn, "fact_orders", fact_orders)
-        _replace_table(conn, "fact_order_items", cleaned.order_items)
-        _replace_table(conn, "fact_payments", cleaned.payments)
 
-        conn.execute("DELETE FROM daily_sales")
-        conn.execute(
-            """
-            INSERT INTO daily_sales (order_date, orders_count, revenue, avg_order_value)
-            SELECT
-                order_date,
-                COUNT(*) AS orders_count,
-                ROUND(SUM(total_amount), 2) AS revenue,
-                ROUND(AVG(total_amount), 2) AS avg_order_value
-            FROM fact_orders
-            WHERE status = 'completed'
-            GROUP BY order_date
-            ORDER BY order_date
-            """
-        )
+            conn.execute(text("DELETE FROM top_products"))
+            conn.execute(
+                text(
+                    """
+                INSERT INTO top_products (product_id, product_name, category, units_sold, revenue)
+                SELECT
+                    p.product_id,
+                    p.product_name,
+                    p.category,
+                    SUM(i.quantity) AS units_sold,
+                    ROUND(SUM(i.line_total), 2) AS revenue
+                FROM fact_order_items i
+                JOIN dim_products p ON p.product_id = i.product_id
+                GROUP BY p.product_id, p.product_name, p.category
+                ORDER BY revenue DESC
+                LIMIT 10
+                    """
+                )
+            )
 
-        conn.execute("DELETE FROM top_products")
-        conn.execute(
-            """
-            INSERT INTO top_products (product_id, product_name, category, units_sold, revenue)
-            SELECT
-                p.product_id,
-                p.product_name,
-                p.category,
-                SUM(i.quantity) AS units_sold,
-                ROUND(SUM(i.line_total), 2) AS revenue
-            FROM fact_order_items i
-            JOIN dim_products p ON p.product_id = i.product_id
-            GROUP BY p.product_id, p.product_name, p.category
-            ORDER BY revenue DESC
-            LIMIT 10
-            """
-        )
+            conn.execute(text("DELETE FROM customer_summary"))
+            conn.execute(
+                text(
+                    """
+                INSERT INTO customer_summary (customer_id, customer_name, city, orders_count, lifetime_value)
+                SELECT
+                    c.customer_id,
+                    c.customer_name,
+                    c.city,
+                    COUNT(o.order_id) AS orders_count,
+                    ROUND(COALESCE(SUM(o.total_amount), 0), 2) AS lifetime_value
+                FROM dim_customers c
+                LEFT JOIN fact_orders o ON o.customer_id = c.customer_id AND o.status = 'completed'
+                GROUP BY c.customer_id, c.customer_name, c.city
+                    """
+                )
+            )
 
-        conn.execute("DELETE FROM customer_summary")
-        conn.execute(
-            """
-            INSERT INTO customer_summary (customer_id, customer_name, city, orders_count, lifetime_value)
-            SELECT
-                c.customer_id,
-                c.customer_name,
-                c.city,
-                COUNT(o.order_id) AS orders_count,
-                ROUND(COALESCE(SUM(o.total_amount), 0), 2) AS lifetime_value
-            FROM dim_customers c
-            LEFT JOIN fact_orders o ON o.customer_id = c.customer_id AND o.status = 'completed'
-            GROUP BY c.customer_id, c.customer_name, c.city
-            """
-        )
-
-        conn.commit()
-
-        return {
-            "customers": len(cleaned.customers),
-            "products": len(cleaned.products),
-            "orders": len(cleaned.orders),
-            "order_items": len(cleaned.order_items),
-            "payments": len(cleaned.payments),
-        }
+            return {
+                "customers": len(cleaned.customers),
+                "products": len(cleaned.products),
+                "orders": len(cleaned.orders),
+                "order_items": len(cleaned.order_items),
+                "payments": len(cleaned.payments),
+            }
+    finally:
+        engine.dispose()
 
 
-def collect_metrics(db_path: Path) -> dict[str, object]:
-    with closing(_connect(db_path)) as conn:
-        orders_count = conn.execute("SELECT COUNT(*) FROM fact_orders WHERE status = 'completed'").fetchone()[0]
-        total_revenue = conn.execute(
-            "SELECT COALESCE(ROUND(SUM(total_amount), 2), 0) FROM fact_orders WHERE status = 'completed'"
-        ).fetchone()[0]
-        customers_count = conn.execute("SELECT COUNT(*) FROM dim_customers").fetchone()[0]
-        top_category = conn.execute(
-            """
-            SELECT p.category, ROUND(SUM(i.line_total), 2) AS revenue
-            FROM fact_order_items i
-            JOIN dim_products p ON p.product_id = i.product_id
-            GROUP BY p.category
-            ORDER BY revenue DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        daily_peak = conn.execute(
-            "SELECT order_date, revenue FROM daily_sales ORDER BY revenue DESC, order_date ASC LIMIT 1"
-        ).fetchone()
+def collect_metrics(database_url: str) -> dict[str, object]:
+    engine = create_database_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            orders_count = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE status = 'completed'")).scalar_one()
+            total_revenue = conn.execute(
+                text("SELECT COALESCE(ROUND(SUM(total_amount), 2), 0) FROM fact_orders WHERE status = 'completed'")
+            ).scalar_one()
+            customers_count = conn.execute(text("SELECT COUNT(*) FROM dim_customers")).scalar_one()
+            top_category = conn.execute(
+                text(
+                    """
+                SELECT p.category, ROUND(SUM(i.line_total), 2) AS revenue
+                FROM fact_order_items i
+                JOIN dim_products p ON p.product_id = i.product_id
+                GROUP BY p.category
+                ORDER BY revenue DESC
+                LIMIT 1
+                    """
+                )
+            ).mappings().first()
+            daily_peak = conn.execute(
+                text("SELECT order_date, revenue FROM daily_sales ORDER BY revenue DESC, order_date ASC LIMIT 1")
+            ).mappings().first()
 
-        return {
-            "completed_orders": int(orders_count),
-            "revenue": float(total_revenue),
-            "customers": int(customers_count),
-            "top_category": dict(top_category) if top_category else None,
-            "best_day": dict(daily_peak) if daily_peak else None,
-        }
+            return {
+                "completed_orders": int(orders_count),
+                "revenue": float(total_revenue),
+                "customers": int(customers_count),
+                "top_category": dict(top_category) if top_category else None,
+                "best_day": dict(daily_peak) if daily_peak else None,
+            }
+    finally:
+        engine.dispose()
 
 
-def run_data_quality_checks(db_path: Path) -> list[str]:
+def run_data_quality_checks(database_url: str) -> list[str]:
     issues: list[str] = []
-    with closing(_connect(db_path)) as conn:
-        null_customer_emails = conn.execute(
-            "SELECT COUNT(*) FROM dim_customers WHERE email IS NULL OR email = ''"
-        ).fetchone()[0]
-        negative_totals = conn.execute("SELECT COUNT(*) FROM fact_orders WHERE total_amount < 0").fetchone()[0]
-        empty_order_items = conn.execute(
-            "SELECT COUNT(*) FROM fact_order_items WHERE quantity <= 0 OR line_total <= 0"
-        ).fetchone()[0]
-        orphan_payments = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM fact_payments p
-            LEFT JOIN fact_orders o ON o.order_id = p.order_id
-            WHERE o.order_id IS NULL
-            """
-        ).fetchone()[0]
-        if null_customer_emails:
-            issues.append("Hay clientes con email vacío.")
-        if negative_totals:
-            issues.append("Hay pedidos con importe negativo.")
-        if empty_order_items:
-            issues.append("Hay líneas de pedido inválidas.")
-        if orphan_payments:
-            issues.append("Hay pagos sin pedido asociado.")
-    return issues
+    engine = create_database_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            null_customer_emails = conn.execute(
+                text("SELECT COUNT(*) FROM dim_customers WHERE email IS NULL OR email = ''")
+            ).scalar_one()
+            negative_totals = conn.execute(text("SELECT COUNT(*) FROM fact_orders WHERE total_amount < 0")).scalar_one()
+            empty_order_items = conn.execute(
+                text("SELECT COUNT(*) FROM fact_order_items WHERE quantity <= 0 OR line_total <= 0")
+            ).scalar_one()
+            orphan_payments = conn.execute(
+                text(
+                    """
+                SELECT COUNT(*)
+                FROM fact_payments p
+                LEFT JOIN fact_orders o ON o.order_id = p.order_id
+                WHERE o.order_id IS NULL
+                    """
+                )
+            ).scalar_one()
+            if null_customer_emails:
+                issues.append("Hay clientes con email vacio.")
+            if negative_totals:
+                issues.append("Hay pedidos con importe negativo.")
+            if empty_order_items:
+                issues.append("Hay lineas de pedido invalidas.")
+            if orphan_payments:
+                issues.append("Hay pagos sin pedido asociado.")
+            return issues
+    finally:
+        engine.dispose()
 
 
 def persist_metrics(metrics: dict[str, object], output_path: Path) -> None:

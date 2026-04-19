@@ -7,5 +7,6 @@ WORKDIR /app
 
 COPY . /app
 
-CMD ["python", "main.py", "run", "--verbose"]
+RUN pip install --no-cache-dir -r requirements.txt
 
+CMD ["python", "main.py", "run", "--verbose"]
